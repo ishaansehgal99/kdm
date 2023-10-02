@@ -13,8 +13,8 @@ import (
 	"k8s.io/klog/v2"
 )
 
-func GenerateServiceManifest(workspaceObj *kdmv1alpha1.Workspace) *corev1.Service {
-	klog.InfoS("GenerateServiceManifest", "workspace", klog.KObj(workspaceObj), "serviceType", corev1.ServiceTypeLoadBalancer)
+func GenerateServiceManifest(ctx context.Context, workspaceObj *kdmv1alpha1.Workspace, serviceType corev1.ServiceType) *corev1.Service {
+	klog.InfoS("GenerateServiceManifest", "workspace", klog.KObj(workspaceObj), "serviceType", serviceType)
 
 	selector := make(map[string]string)
 	for k, v := range workspaceObj.Resource.LabelSelector.MatchLabels {
@@ -37,7 +37,7 @@ func GenerateServiceManifest(workspaceObj *kdmv1alpha1.Workspace) *corev1.Servic
 			},
 		},
 		Spec: corev1.ServiceSpec{
-			Type: corev1.ServiceTypeLoadBalancer,
+			Type: serviceType,
 			Ports: []corev1.ServicePort{
 				// HTTP API Port
 				{
@@ -65,12 +65,12 @@ func GenerateServiceManifest(workspaceObj *kdmv1alpha1.Workspace) *corev1.Servic
 func GenerateStatefulSetManifest(ctx context.Context, workspaceObj *kdmv1alpha1.Workspace, imageName string,
 	replicas int, commands []string, containerPorts []corev1.ContainerPort,
 	livenessProbe, readinessProbe *corev1.Probe, resourceRequirements corev1.ResourceRequirements,
-	tolerations []corev1.Toleration) *appsv1.StatefulSet {
+	tolerations []corev1.Toleration, volumes []corev1.Volume, volumeMount []corev1.VolumeMount) *appsv1.StatefulSet {
 
 	klog.InfoS("GenerateStatefulSetManifest", "workspace", klog.KObj(workspaceObj), "image", imageName)
 
 	// Gather label requirements from workspaceObj's label selector
-	var labelRequirements []v1.LabelSelectorRequirement
+	labelRequirements := make([]v1.LabelSelectorRequirement, 0, len(workspaceObj.Resource.LabelSelector.MatchLabels))
 	for key, value := range workspaceObj.Resource.LabelSelector.MatchLabels {
 		labelRequirements = append(labelRequirements, v1.LabelSelectorRequirement{
 			Key:      key,
@@ -78,7 +78,6 @@ func GenerateStatefulSetManifest(ctx context.Context, workspaceObj *kdmv1alpha1.
 			Values:   []string{value},
 		})
 	}
-	volumes, volumeMount := ConfigVolume(workspaceObj)
 
 	return &appsv1.StatefulSet{
 		ObjectMeta: v1.ObjectMeta{

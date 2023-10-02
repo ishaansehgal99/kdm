@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	appsv1 "k8s.io/api/apps/v1"
-	"strconv"
 	"time"
 
 	"github.com/aws/karpenter-core/pkg/apis/v1alpha5"
@@ -29,14 +28,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
-
-const (
-	PresetModelllama2AWorldSize = 1
-	PresetModelllama2BWorldSize = 4
-	PresetModelllama2CWorldSize = 8
-)
-
-var torchRunParams = map[string]string{}
 
 type WorkspaceReconciler struct {
 	client.Client
@@ -285,7 +276,8 @@ func (c *WorkspaceReconciler) validateNodeInstanceType(ctx context.Context, wObj
 // createAndValidateNode creates a new machine and validates status.
 func (c *WorkspaceReconciler) createAndValidateNode(ctx context.Context, wObj *kdmv1alpha1.Workspace) (*corev1.Node, error) {
 	klog.InfoS("createAndValidateNode", "workspace", klog.KObj(wObj))
-	newMachine := machine.GenerateMachineManifest(ctx, wObj)
+
+	newMachine := machine.GenerateMachineManifest(ctx, inference.Llama2PresetInferences[wObj.Inference.Preset.Name].DiskStorageRequirement, wObj)
 
 	if err := machine.CreateMachine(ctx, newMachine, c.Client); err != nil {
 		klog.ErrorS(err, "failed to create machine", "machine", newMachine.Name)
@@ -392,14 +384,16 @@ func (c *WorkspaceReconciler) applyAnnotations(ctx context.Context, wObj *kdmv1a
 
 	existingSVC := &corev1.Service{}
 	err := k8sresources.GetResource(ctx, wObj.Name, wObj.Namespace, c.Client, existingSVC)
-	// TODO: Add a check to ensure service found is of expected spec
 	if err != nil {
 		if !errors.IsNotFound(err) {
-			klog.InfoS("a service already exists for workspace", "workspace", klog.KObj(wObj), "serviceType", serviceType)
-			return nil
+			return err
 		}
+	} else {
+		klog.InfoS("a service already exists for workspace", "workspace", klog.KObj(wObj), "serviceType", serviceType)
+		return nil
 	}
-	serviceObj := k8sresources.GenerateServiceManifest(wObj)
+
+	serviceObj := k8sresources.GenerateServiceManifest(ctx, wObj, serviceType)
 	err = k8sresources.CreateResource(ctx, serviceObj, c.Client)
 	if err != nil {
 		return err
@@ -444,35 +438,30 @@ func (c *WorkspaceReconciler) setTorchParams(ctx context.Context, wObj *kdmv1alp
 func (c *WorkspaceReconciler) applyInference(ctx context.Context, wObj *kdmv1alpha1.Workspace) error {
 	klog.InfoS("applyInference", "workspace", klog.KObj(wObj))
 
-	presetName := wObj.Inference.Preset.Name
 	existingObj := &appsv1.StatefulSet{}
 	err := k8sresources.GetResource(ctx, wObj.Name, wObj.Namespace, c.Client, existingObj)
-	// TODO: Add a check to ensure statefulset found is of expected spec
 	if err != nil {
 		if !errors.IsNotFound(err) {
-			klog.InfoS("a clientObject already exists for workspace", "workspace", klog.KObj(wObj))
-			return nil
-		}
-		if err := c.updateStatusConditionIfNotMatch(ctx, wObj, kdmv1alpha1.WorkspaceConditionTypeInferenceStatus, metav1.ConditionFalse,
-			"WorkspaceInferenceStatusFailed", err.Error()); err != nil {
-			klog.ErrorS(err, "failed to update workspace status", "workspace", wObj)
+			if err := c.updateStatusConditionIfNotMatch(ctx, wObj, kdmv1alpha1.WorkspaceConditionTypeInferenceStatus, metav1.ConditionFalse,
+				"WorkspaceInferenceStatusFailed", err.Error()); err != nil {
+				klog.ErrorS(err, "failed to update workspace status", "workspace", wObj)
+				return err
+			}
 			return err
 		}
-		return err
+	} else {
+		klog.InfoS("a statefulset already exists for workspace", "workspace", klog.KObj(wObj))
+		return nil
 	}
 
-	if err := c.setTorchParams(ctx, wObj, presetName); err != nil {
-		klog.ErrorS(err, "failed to update torch params", "workspace", wObj)
-		return err
-	}
-
+	presetName := wObj.Inference.Preset.Name
 	switch presetName {
-	case kdmv1alpha1.PresetSetModelllama2A:
-		err = inference.CreateLLAMA2APresetModel(ctx, wObj, torchRunParams, c.Client)
-	case kdmv1alpha1.PresetSetModelllama2B:
-		err = inference.CreateLLAMA2BPresetModel(ctx, wObj, torchRunParams, c.Client)
-	case kdmv1alpha1.PresetSetModelllama2C:
-		err = inference.CreateLLAMA2CPresetModel(ctx, wObj, torchRunParams, c.Client)
+	case kdmv1alpha1.PresetLlama2AChat:
+		err = inference.CreatePresetInference(ctx, wObj, inference.Llama2PresetInferences[kdmv1alpha1.PresetLlama2AChat], c.Client)
+	case kdmv1alpha1.PresetLlama2BChat:
+		err = inference.CreatePresetInference(ctx, wObj, inference.Llama2PresetInferences[kdmv1alpha1.PresetLlama2BChat], c.Client)
+	case kdmv1alpha1.PresetLlama2CChat:
+		err = inference.CreatePresetInference(ctx, wObj, inference.Llama2PresetInferences[kdmv1alpha1.PresetLlama2CChat], c.Client)
 	default:
 		err = fmt.Errorf("preset model %s is not supported", presetName)
 		klog.ErrorS(err, "no inference has been created")
